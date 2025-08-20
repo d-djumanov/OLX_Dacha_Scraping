@@ -42,9 +42,24 @@ jobs:
 
       - name: Restore service account file
         run: |
-          cat > Project/dacha-data-scraping-bc5665b6482e.json <<'JSON'
-          $SERVICE_ACCOUNT_JSON
-          JSON
+          PD="${{ steps.detect.outputs.dir }}"
+          # Write the secret value exactly as-is into the JSON file
+          printf '%s' "${SERVICE_ACCOUNT_JSON}" > "$PD/dacha-data-scraping-bc5665b6482e.json"
+          # Sanity check: show size only (content stays secret)
+          ls -l "$PD/dacha-data-scraping-bc5665b6482e.json"
+      - name: Validate service account JSON
+        run: |
+          # Make PD available to child processes (Python)
+          export PD="${{ steps.detect.outputs.dir }}"
+          python - <<'PY'
+import json, os
+fn = os.path.join(os.environ['PD'], 'dacha-data-scraping-bc5665b6482e.json')
+with open(fn, 'r', encoding='utf-8') as f:
+    json.load(f)
+print("Service account JSON OK:", fn)
+PY
+
+
 
       - name: Mark start time (Tashkent)
         run: |
