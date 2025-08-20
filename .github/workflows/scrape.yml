@@ -41,12 +41,20 @@ jobs:
           python -m playwright install --with-deps
 
       - name: Restore service account file
+        shell: bash
         run: |
+          set -euo pipefail
           PD="${{ steps.detect.outputs.dir }}"
-          # Write the secret value exactly as-is into the JSON file
+          if [ -z "$PD" ]; then PD="."; fi
+          echo "Project dir resolved to: $PD"
+          mkdir -p "$PD"
+
+          # Write the secret exactly as-is into the JSON file
           printf '%s' "${SERVICE_ACCOUNT_JSON}" > "$PD/dacha-data-scraping-bc5665b6482e.json"
-          # Sanity check: show size only (content stays secret)
+
+          # Quick sanity check (size only; content stays secret)
           ls -l "$PD/dacha-data-scraping-bc5665b6482e.json"
+
       - name: Validate service account JSON
         run: |
           # Make PD available to child processes (Python)
