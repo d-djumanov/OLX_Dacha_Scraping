@@ -1,4 +1,4 @@
-playwright==1.47.2
+playwright==1.54.0
 beautifulsoup4==4.12.3
 lxml==5.2.1
 pandas==2.2.2
@@ -7,4 +7,5 @@ google-auth==2.29.0
 rapidfuzz==3.8.1
 python-dateutil==2.9.0.post0
 tqdm==4.66.4
+
 
