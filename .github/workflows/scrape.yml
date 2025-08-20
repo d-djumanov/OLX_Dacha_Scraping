@@ -52,15 +52,6 @@ jobs:
           # Make PD available to child processes (Python)
           export PD="${{ steps.detect.outputs.dir }}"
           python - <<'PY'
-import json, os
-fn = os.path.join(os.environ['PD'], 'dacha-data-scraping-bc5665b6482e.json')
-with open(fn, 'r', encoding='utf-8') as f:
-    json.load(f)
-print("Service account JSON OK:", fn)
-PY
-
-
-
       - name: Mark start time (Tashkent)
         run: |
           echo "START_TS=$(date +%s)" >> $GITHUB_ENV
