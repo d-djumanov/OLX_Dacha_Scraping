@@ -73,6 +73,9 @@ jobs:
       # ✅ Browsers + OS deps for Playwright
       - name: Install Playwright browsers & deps
         uses: microsoft/playwright-github-action@v1
+      - name: Install Playwright browsers for Python
+        run: |
+          python -m playwright install chromium
 
       # ⬇️ Write your service-account JSON into the detected folder (or repo root fallback)
       - name: Restore service account file
