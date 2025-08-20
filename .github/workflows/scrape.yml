@@ -70,12 +70,13 @@ jobs:
             pip install playwright==1.54.0 beautifulsoup4 lxml pandas gspread google-auth rapidfuzz python-dateutil tqdm
           fi
 
-      # ✅ Browsers + OS deps for Playwright
-      - name: Install Playwright browsers & deps
-        uses: microsoft/playwright-github-action@v1
+      # ✅ Playwright system deps (replacement for deprecated action)
+      - name: Install Playwright system deps
+        run: npx playwright install --with-deps
+
+      # ✅ Python package browsers
       - name: Install Playwright browsers for Python
-        run: |
-          python -m playwright install chromium
+        run: python -m playwright install chromium
 
       # ⬇️ Write your service-account JSON into the detected folder (or repo root fallback)
       - name: Restore service account file
@@ -98,8 +99,8 @@ jobs:
 
       - name: Mark start time (Tashkent)
         run: |
-          echo "START_TS=$(date +%s)" >> $GITHUB_ENV
-          echo "START_HUMAN=$(TZ=Asia/Tashkent date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_ENV
+            echo "START_TS=$(date +%s)" >> $GITHUB_ENV
+            echo "START_HUMAN=$(TZ=Asia/Tashkent date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_ENV
 
       - name: Run scraper
         working-directory: ${{ steps.detect.outputs.dir }}
@@ -140,6 +141,7 @@ jobs:
           path: |
             ${{ steps.detect.outputs.dir }}/olx_dacha_tashkent_raw_*.csv
             ${{ steps.detect.outputs.dir }}/*.png
+            ${{ steps.detect.outputs.dir }}/*.html
           if-no-files-found: ignore
 
       - name: Commit updated files
