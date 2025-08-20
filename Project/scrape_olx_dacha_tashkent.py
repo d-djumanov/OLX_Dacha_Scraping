@@ -7,7 +7,7 @@ import logging
 import hashlib
 from datetime import datetime
 from time import sleep
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple   # ⬅ added Tuple
 
 from tqdm import tqdm
 from playwright._impl._errors import TimeoutError as PWTimeoutError
@@ -176,6 +176,7 @@ def parse_posted_dt(dt_text:str) -> Optional[str]:
     except Exception:
         return None
 
+# === Google Sheets helpers (ensure worksheet + header) ===
 def get_google_sheet():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -183,11 +184,22 @@ def get_google_sheet():
     ]
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_JSON, scopes=scopes)
     gc = gspread.authorize(creds)
-    sh = gc.open(SPREADSHEET_NAME)
-    return sh.worksheet(WORKSHEET_NAME)
+
+    # Open or create spreadsheet
+    try:
+        sh = gc.open(SPREADSHEET_NAME)
+    except gspread.SpreadsheetNotFound:
+        sh = gc.create(SPREADSHEET_NAME)
+
+    # Open or create worksheet
+    try:
+        ws = sh.worksheet(WORKSHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=40)
+
+    return ws
 
 def _col_label(n: int) -> str:
-    # 1 -> A, 26 -> Z, 27 -> AA
     label = ""
     while n:
         n, r = divmod(n - 1, 26)
@@ -196,8 +208,14 @@ def _col_label(n: int) -> str:
 
 def update_google_sheet(rows:List[List[Any]], header:List[str], pk_col:int, old_data:pd.DataFrame):
     sheet = get_google_sheet()
-    sheet_data = sheet.get_all_values()
-    sheet_df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0]) if sheet_data else pd.DataFrame(columns=header)
+
+    # Ensure header row exists
+    data = sheet.get_all_values()
+    if not data:
+        sheet.append_row(header)
+        data = [header]
+
+    sheet_df = pd.DataFrame(data[1:], columns=data[0]) if len(data) > 1 else pd.DataFrame(columns=header)
 
     need_update, need_insert = [], []
     for row in rows:
@@ -219,12 +237,16 @@ def update_google_sheet(rows:List[List[Any]], header:List[str], pk_col:int, old_
 
     if need_insert:
         sheet.append_rows(need_insert, value_input_option="USER_ENTERED")
+        logging.info("Sheet: inserted %d new rows", len(need_insert))
     for ix, row in need_update:
         last_col = _col_label(len(header))
         sheet.update(f"A{ix}:{last_col}{ix}", [row])
+    if need_update:
+        logging.info("Sheet: updated %d existing rows", len(need_update))
 
 # ==== SCRAPER ====
-def scrape_olx_listings() -> List[str]:
+def scrape_olx_listings() -> Tuple[List[str], str]:
+    """Return (ad_urls, page_html) for fallback parsing if needed."""
     urls: List[str] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -267,7 +289,8 @@ def scrape_olx_listings() -> List[str]:
                     except Exception: pass
                     raise
 
-        soup = BeautifulSoup(page.content(), "lxml")
+        html = page.content()
+        soup = BeautifulSoup(html, "lxml")
         for a in soup.select('a[href*="/d/obyavlenie/"]'):
             href = a.get("href")
             if not href: continue
@@ -278,7 +301,86 @@ def scrape_olx_listings() -> List[str]:
         context.close()
         browser.close()
 
-    return sorted(set(urls))
+    return sorted(set(urls)), html
+
+def parse_list_grid(html: str) -> List[Dict[str, Any]]:
+    """Fallback: extract minimal rows straight from the listing grid (no per-ad navigation)."""
+    rows = []
+    soup = BeautifulSoup(html or "", "lxml")
+    for card in soup.select('[data-testid="l-card"]'):
+        a = card.select_one('a[href*="/d/obyavlenie/"]')
+        if not a:
+            continue
+        href = a.get("href") or ""
+        if href.startswith("/"):
+            href = "https://www.olx.uz" + href
+        lid = get_listing_id(href)
+
+        title_el = card.select_one('[data-cy="ad_title"], h6, h5, h4')
+        title = title_el.get_text(strip=True) if title_el else None
+
+        price_el = card.select_one('[data-testid="ad-price"]')
+        price_text = price_el.get_text(strip=True) if price_el else None
+        price_uzs = int(re.sub(r"[^\d]", "", price_text)) if price_text and re.search(r"\d", price_text) else None
+        negotiable = False
+        if price_text and ("договорная" in price_text.lower() or "kelishiladi" in price_text.lower()):
+            price_uzs = None
+            negotiable = True
+
+        loc_el = card.select_one('[data-testid="location-date"]')
+        loc_text = loc_el.get_text(" ", strip=True) if loc_el else None
+        region = district = None
+        if loc_text:
+            parts = [p.strip() for p in re.split(r"[·|•]", loc_text)]
+            place = parts[0] if parts else None
+            if place and "," in place:
+                rparts = [p.strip() for p in place.split(",", 1)]
+                region = rparts[0] or None
+                district = rparts[1] or None
+            else:
+                region = place
+
+        scrape_ts = datetime.now().astimezone().isoformat()
+        full_text = title or ""
+        lang_detect = detect_script(full_text)
+        norm_text = canon_text(full_text)
+        flags, rules = extract_flags(full_text + " " + norm_text)
+        amenities = "|".join([k for k,v in flags.items() if v])
+
+        rows.append({
+            "scrape_ts": scrape_ts,
+            "listing_id": lid,
+            "url": href,
+            "title": title,
+            "price_uzs": price_uzs,
+            "negotiable": negotiable,
+            "region": region,
+            "district": district,
+            "rooms": None,
+            "capacity_beds": None,
+            "area_m2": None,
+            "posted_dt_local": None,
+            "seller_name": None,
+            "seller_type": None,
+            "seller_phone": None,
+            "seller_phone_hash": None,
+            "views_count": None,
+            "amenities": amenities,
+            "rules": rules,
+            "photo_count": None,
+            "has_pool": flags.get("pool", False),
+            "has_billiards": flags.get("billiards", False),
+            "has_karaoke": flags.get("karaoke", False),
+            "has_table_tennis": flags.get("table_tennis", False),
+            "has_sauna": flags.get("sauna", False),
+            "has_wifi": flags.get("wifi", False),
+            "has_ac": flags.get("ac", False),
+            "has_parking": flags.get("parking", False),
+            "has_terrace": flags.get("terrace", False),
+            "has_garden": flags.get("garden_bbq", False),
+            "lang_detect": lang_detect
+        })
+    return rows
 
 def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
     try:
@@ -460,8 +562,8 @@ def main():
     ]
     pk_col = 1  # listing_id
 
-    # Scrape listing URLs
-    ad_urls = scrape_olx_listings()
+    # Scrape listing URLs (+ page HTML for fallback)
+    ad_urls, listings_html = scrape_olx_listings()
     rows = []
     new_listing_ids = set(scraped_ids)
 
@@ -477,7 +579,7 @@ def main():
             failed_nav += 1
             continue
 
-        # Skip keyword filter only when running locally (CI already category-filters)
+        # Extra keyword guard only for local runs (CI already category-filters)
         if (not CI) and (not keyword_match((ad_data.get("title") or "") + " " + (ad_data.get("amenities") or ""))):
             skipped_keyword += 1
             continue
@@ -489,6 +591,15 @@ def main():
 
     logging.info("SUMMARY: found=%d parsed_ok=%d failed_nav=%d skipped_keyword=%d",
                  len(ad_urls), parsed_ok, failed_nav, skipped_keyword)
+
+    # Fallback: if all per-ad scrapes failed but we have URLs, parse the grid
+    if parsed_ok == 0 and ad_urls:
+        logging.warning("Per-ad scraping failed (parsed_ok=0). Using list-page fallback.")
+        grid_rows = parse_list_grid(listings_html)
+        for ad in grid_rows:
+            new_listing_ids.add(ad["listing_id"])
+            rows.append([ad.get(h) for h in header])
+        logging.info("Fallback added %d rows from listing grid.", len(grid_rows))
 
     # Read existing sheet data for updates
     try:
