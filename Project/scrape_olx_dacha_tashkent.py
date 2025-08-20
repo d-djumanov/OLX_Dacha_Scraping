@@ -397,4 +397,128 @@ def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
             has_ac = flags.get("ac",False)
             has_parking = flags.get("parking",False)
             has_terrace = flags.get("terrace",False)
-            has_garden = flags.get("garden_bbq",F
+            has_garden = flags.get("garden_bbq",False)
+
+            # Only keep matching dacha ads locally; in CI skip this filter
+            if not CI:
+                if not keyword_match(full_text) and not keyword_match(norm_text):
+                    return None
+                if "квартира" in norm_text and not keyword_match(norm_text):
+                    return None
+
+            browser.close()
+
+            return {
+                "scrape_ts": scrape_ts,
+                "listing_id": listing_id,
+                "url": url,
+                "title": title,
+                "price_uzs": price_uzs,
+                "negotiable": negotiable,
+                "region": region,
+                "district": district,
+                "rooms": rooms,
+                "capacity_beds": capacity_beds,
+                "area_m2": area_m2,
+                "posted_dt_local": posted_dt_local,
+                "seller_name": seller_name,
+                "seller_type": seller_type,
+                "seller_phone": seller_phone,
+                "seller_phone_hash": seller_phone_hash,
+                "views_count": views_count,
+                "amenities": amenities,
+                "rules": rules,
+                "photo_count": photo_count,
+                "has_pool": has_pool,
+                "has_billiards": has_billiards,
+                "has_karaoke": has_karaoke,
+                "has_table_tennis": has_table_tennis,
+                "has_sauna": has_sauna,
+                "has_wifi": has_wifi,
+                "has_ac": has_ac,
+                "has_parking": has_parking,
+                "has_terrace": has_terrace,
+                "has_garden": has_garden,
+                "lang_detect": lang_detect
+            }
+
+    except Exception as e:
+        logging.warning("Failed to scrape ad %s: %s", url, e)
+        return None
+
+def main():
+    # Load state and old data
+    state = load_state(STATE_FILE)
+    scraped_ids = set(state.get("listing_ids", []))
+
+    header = [
+        "scrape_ts","listing_id","url","title","price_uzs","negotiable","region","district",
+        "rooms","capacity_beds","area_m2","posted_dt_local","seller_name","seller_type",
+        "seller_phone","seller_phone_hash","views_count","amenities","rules","photo_count",
+        "has_pool","has_billiards","has_karaoke","has_table_tennis","has_sauna","has_wifi",
+        "has_ac","has_parking","has_terrace","has_garden","lang_detect"
+    ]
+    pk_col = 1  # listing_id
+
+    # Scrape listing URLs
+    ad_urls = scrape_olx_listings()
+    rows = []
+    new_listing_ids = set(scraped_ids)
+
+    # Counters for diagnostics
+    skipped_keyword = 0
+    failed_nav = 0
+    parsed_ok = 0
+
+    for url in tqdm(ad_urls, desc="Scraping ads"):
+        random_delay()
+        ad_data = scrape_olx_ad(url)
+        if not ad_data:
+            failed_nav += 1
+            continue
+
+        # Skip keyword filter only when running locally (CI already category-filters)
+        if (not CI) and (not keyword_match((ad_data.get("title") or "") + " " + (ad_data.get("amenities") or ""))):
+            skipped_keyword += 1
+            continue
+
+        listing_id = ad_data["listing_id"]
+        new_listing_ids.add(listing_id)
+        rows.append([ad_data.get(h) for h in header])
+        parsed_ok += 1
+
+    logging.info("SUMMARY: found=%d parsed_ok=%d failed_nav=%d skipped_keyword=%d",
+                 len(ad_urls), parsed_ok, failed_nav, skipped_keyword)
+
+    # Read existing sheet data for updates
+    try:
+        sheet = get_google_sheet()
+        sheet_data = sheet.get_all_values()
+        old_data = pd.DataFrame(sheet_data[1:], columns=sheet_data[0]) if sheet_data else pd.DataFrame(columns=header)
+    except Exception as e:
+        logging.warning("Could not load Google Sheet: %s", e)
+        old_data = pd.DataFrame([], columns=header)
+
+    # Update Google Sheet (insert/update)
+    if rows:
+        update_google_sheet(rows, header, pk_col, old_data)
+
+    # Save local CSV
+    today = datetime.now().strftime("%Y%m%d")
+    csv_path = LOCAL_CSV_PATTERN.format(date=today)
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for row in rows:
+            writer.writerow(row)
+    logging.info("Saved local CSV: %s", csv_path)
+
+    # Save state
+    state["listing_ids"] = list(new_listing_ids)
+    state["last_run_ts"] = datetime.now().astimezone().isoformat()
+    state["last_scrape_count"] = len(rows)
+    save_state(STATE_FILE, state)
+    logging.info("Done. Scraped %d ads.", len(rows))
+
+if __name__ == "__main__":
+    main()
