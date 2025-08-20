@@ -1,23 +1,22 @@
 name: Daily OLX Dacha Scraper
 
 on:
-  push:            # First run when you upload/push
-    branches:
-      - "**"
-  schedule:        # Daily at 10:00 Asia/Tashkent (UTC+5) = 05:00 UTC
+  push:                 # first run when you upload/commit
+    branches: ["**"]
+  schedule:             # daily at 10:00 Asia/Tashkent (UTC+5) = 05:00 UTC
     - cron: "0 5 * * *"
-  workflow_dispatch: {}
-  
+  workflow_dispatch: {} # manual run button
+
 concurrency:
   group: scraper
   cancel-in-progress: true
-  
+
 permissions:
-  contents: write  # commit last_run.txt, runs_log.csv, state.json
+  contents: write       # needed to commit last_run/runs_log/state.json
 
 jobs:
   run-scraper:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       TZ: Asia/Tashkent
       SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
@@ -26,20 +25,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Show workspace (debug aid)
+        run: |
+          echo "PWD=$(pwd)"
+          ls -la
+          echo "---- repo tree (depth<=3) ----"
+          find . -maxdepth 3 -type f -print | sort
+
+      # 🔎 Find your script anywhere in the repo
+      - name: Detect project directory & script
+        id: detect
+        shell: bash
+        run: |
+          set -e
+          FOUND=$(git ls-files -z | tr '\0' '\n' | grep -m1 -E '(^|/)scrape_olx_dacha_tashkent\.py$' || true)
+          if [ -z "$FOUND" ]; then
+            FOUND=$(find . -type f -name 'scrape_olx_dacha_tashkent.py' | head -n 1)
+          fi
+          if [ -z "$FOUND" ]; then
+            echo "::error ::Could not find scrape_olx_dacha_tashkent.py anywhere in the repo."
+            exit 1
+          fi
+          DIR=$(dirname "$FOUND"); DIR=${DIR#./}
+          SCRIPT=$(basename "$FOUND")
+          echo "dir=${DIR:-.}" >> $GITHUB_OUTPUT
+          echo "script=$SCRIPT" >> $GITHUB_OUTPUT
+          echo "Project dir: ${DIR:-.}"
+          echo "Script name: $SCRIPT"
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install Python deps
+        shell: bash
         run: |
+          set -e
+          PD="${{ steps.detect.outputs.dir }}"
           python -m pip install -U pip
-          pip install -r Project/requirements.txt
+          if [ -f "$PD/requirements.txt" ]; then
+            pip install -r "$PD/requirements.txt"
+          else
+            pip install playwright==1.54.0 beautifulsoup4 lxml pandas gspread google-auth rapidfuzz python-dateutil tqdm
+          fi
 
-      - name: Install Playwright (browsers + libs)
-        run: |
-          python -m playwright install --with-deps
+      # ✅ Browsers + OS deps for Playwright
+      - name: Install Playwright browsers & deps
+        uses: microsoft/playwright-github-action@v1
 
+      # ⬇️ Write your service-account JSON into the detected folder (or repo root fallback)
       - name: Restore service account file
         shell: bash
         run: |
@@ -48,27 +83,25 @@ jobs:
           if [ -z "$PD" ]; then PD="."; fi
           echo "Project dir resolved to: $PD"
           mkdir -p "$PD"
-
-          # Write the secret exactly as-is into the JSON file
           printf '%s' "${SERVICE_ACCOUNT_JSON}" > "$PD/dacha-data-scraping-bc5665b6482e.json"
-
-          # Quick sanity check (size only; content stays secret)
           ls -l "$PD/dacha-data-scraping-bc5665b6482e.json"
 
+      # 🔐 Quick JSON validity check (avoids empty/garbled secret)
       - name: Validate service account JSON
+        shell: bash
         run: |
-          # Make PD available to child processes (Python)
-          export PD="${{ steps.detect.outputs.dir }}"
-          python - <<'PY'
+          PD="${{ steps.detect.outputs.dir }}"; [ -z "$PD" ] && PD="."
+          python -c "import json; json.load(open('${PD}/dacha-data-scraping-bc5665b6482e.json','r',encoding='utf-8')); print('Service account JSON OK:', '${PD}/dacha-data-scraping-bc5665b6482e.json')"
+
       - name: Mark start time (Tashkent)
         run: |
           echo "START_TS=$(date +%s)" >> $GITHUB_ENV
           echo "START_HUMAN=$(TZ=Asia/Tashkent date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_ENV
 
       - name: Run scraper
-        working-directory: Project
+        working-directory: ${{ steps.detect.outputs.dir }}
         run: |
-          python scrape_olx_dacha_tashkent.py
+          python "${{ steps.detect.outputs.script }}"
 
       - name: Capture job status for logging
         if: ${{ always() }}
@@ -77,19 +110,17 @@ jobs:
 
       - name: Write last_run.txt and append runs_log.csv
         if: ${{ always() }}
+        shell: bash
         run: |
+          PD="${{ steps.detect.outputs.dir }}"; [ -z "$PD" ] && PD="."
           END_TS=$(date +%s)
           END_HUMAN=$(TZ=Asia/Tashkent date '+%Y-%m-%d %H:%M:%S %Z')
           DURATION=$((END_TS - START_TS))
           H=$((DURATION/3600)); M=$(((DURATION%3600)/60)); S=$((DURATION%60))
           DURATION_HMS=$(printf "%02d:%02d:%02d" "$H" "$M" "$S")
-
-          # Overwrite summary file
           printf "start:   %s\nend:     %s\nduration_seconds: %s\nduration_hms: %s\nstatus:  %s\n" \
-            "$START_HUMAN" "$END_HUMAN" "$DURATION" "$DURATION_HMS" "$JOB_STATUS" > Project/last_run.txt
-
-          # Append CSV log with header-once
-          LOG=Project/runs_log.csv
+            "$START_HUMAN" "$END_HUMAN" "$DURATION" "$DURATION_HMS" "$JOB_STATUS" > "$PD/last_run.txt"
+          LOG="$PD/runs_log.csv"
           if [ ! -f "$LOG" ]; then
             echo "date_local,start_local,end_local,duration_seconds,duration_hms,run_id,run_number,sha,status" > "$LOG"
           fi
@@ -99,18 +130,39 @@ jobs:
             "$DATE_LOCAL" "$START_HUMAN" "$END_HUMAN" "$DURATION" "$DURATION_HMS" \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$SHORT_SHA" "$JOB_STATUS" >> "$LOG"
 
-      - name: Upload CSV artifact
+      - name: Upload artifacts (CSV + debug screenshots)
         uses: actions/upload-artifact@v4
         with:
-          name: olx-dacha-csv
-          path: Project/olx_dacha_tashkent_raw_*.csv
+          name: olx-dacha-output
+          path: |
+            ${{ steps.detect.outputs.dir }}/olx_dacha_tashkent_raw_*.csv
+            ${{ steps.detect.outputs.dir }}/*.png
           if-no-files-found: ignore
 
-      - name: Commit updated state.json, last_run.txt, runs_log.csv
+      - name: Commit updated files
         if: ${{ always() }}
+        shell: bash
         run: |
+          set -e
+          BRANCH="${GITHUB_REF_NAME}"
+          PD="${{ steps.detect.outputs.dir }}"; [ -z "$PD" ] && PD="."
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add Project/state.json Project/last_run.txt Project/runs_log.csv
-          git commit -m "Update state, last_run, runs_log [skip ci]" || echo "No changes"
-          git push
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          FILES=()
+          [ -f "$PD/state.json" ] && FILES+=("$PD/state.json")
+          [ -f "$PD/last_run.txt" ] && FILES+=("$PD/last_run.txt")
+          [ -f "$PD/runs_log.csv" ] && FILES+=("$PD/runs_log.csv")
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git add "${FILES[@]}"
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Update state, last_run, runs_log [skip ci]"
+          git pull --rebase origin "$BRANCH" || true
+          git push origin HEAD:"$BRANCH"
