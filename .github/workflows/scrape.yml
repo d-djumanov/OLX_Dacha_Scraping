@@ -1,18 +1,18 @@
 name: Daily OLX Dacha Scraper
 
 on:
-  push:                 # first run when you upload/commit
+  push:
     branches: ["**"]
-  schedule:             # daily at 10:00 Asia/Tashkent (UTC+5) = 05:00 UTC
-    - cron: "0 5 * * *"
-  workflow_dispatch: {} # manual run button
+  schedule:
+    - cron: "0 5 * * *"   # 10:00 Asia/Tashkent
+  workflow_dispatch: {}
 
 concurrency:
   group: scraper
   cancel-in-progress: true
 
 permissions:
-  contents: write       # needed to commit last_run/runs_log/state.json
+  contents: write
 
 jobs:
   run-scraper:
@@ -20,6 +20,7 @@ jobs:
     env:
       TZ: Asia/Tashkent
       SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+      PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
 
     steps:
       - name: Checkout
@@ -32,7 +33,6 @@ jobs:
           echo "---- repo tree (depth<=3) ----"
           find . -maxdepth 3 -type f -print | sort
 
-      # 🔎 Find your script anywhere in the repo
       - name: Detect project directory & script
         id: detect
         shell: bash
@@ -58,6 +58,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install Python deps
         shell: bash
         run: |
@@ -70,15 +78,20 @@ jobs:
             pip install playwright==1.54.0 beautifulsoup4 lxml pandas gspread google-auth rapidfuzz python-dateutil tqdm
           fi
 
-      # ✅ Playwright system deps (replacement for deprecated action)
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-pw-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pw-
+
       - name: Install Playwright system deps
         run: npx playwright install --with-deps
 
-      # ✅ Python package browsers
       - name: Install Playwright browsers for Python
         run: python -m playwright install chromium
 
-      # ⬇️ Write your service-account JSON into the detected folder (or repo root fallback)
       - name: Restore service account file
         shell: bash
         run: |
@@ -90,7 +103,6 @@ jobs:
           printf '%s' "${SERVICE_ACCOUNT_JSON}" > "$PD/dacha-data-scraping-bc5665b6482e.json"
           ls -l "$PD/dacha-data-scraping-bc5665b6482e.json"
 
-      # 🔐 Quick JSON validity check (avoids empty/garbled secret)
       - name: Validate service account JSON
         shell: bash
         run: |
@@ -99,8 +111,8 @@ jobs:
 
       - name: Mark start time (Tashkent)
         run: |
-            echo "START_TS=$(date +%s)" >> $GITHUB_ENV
-            echo "START_HUMAN=$(TZ=Asia/Tashkent date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_ENV
+          echo "START_TS=$(date +%s)" >> $GITHUB_ENV
+          echo "START_HUMAN=$(TZ=Asia/Tashkent date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_ENV
 
       - name: Run scraper
         working-directory: ${{ steps.detect.outputs.dir }}
@@ -134,7 +146,7 @@ jobs:
             "$DATE_LOCAL" "$START_HUMAN" "$END_HUMAN" "$DURATION" "$DURATION_HMS" \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$SHORT_SHA" "$JOB_STATUS" >> "$LOG"
 
-      - name: Upload artifacts (CSV + debug screenshots)
+      - name: Upload artifacts (CSV + debug screenshots/HTML)
         uses: actions/upload-artifact@v4
         with:
           name: olx-dacha-output
