@@ -7,8 +7,9 @@ import logging
 import hashlib
 from datetime import datetime
 from time import sleep
-from typing import List, Dict, Any, Optional, Tuple   # ⬅ added Tuple
+from typing import List, Dict, Any, Optional, Tuple
 
+from zoneinfo import ZoneInfo
 from tqdm import tqdm
 from playwright._impl._errors import TimeoutError as PWTimeoutError
 
@@ -32,6 +33,10 @@ LOGFILE = "scrape_olx_dacha_tashkent.log"
 
 OLX_START_URL = "https://www.olx.uz/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
 
+# pagination
+MAX_PAGES = int(os.getenv("OLX_MAX_PAGES", "20"))  # scan up to N list pages
+STOP_AFTER_EMPTY = 2                                # stop after consecutive empty pages
+
 UA_LIST = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.2 Safari/605.1.15",
@@ -47,11 +52,6 @@ DACHA_KEYWORDS = [
 ]
 DACHA_KEYWORDS_NORM = [k.lower() for k in DACHA_KEYWORDS]
 
-REGION_KEYWORDS = [
-    "Чарвак", "Charvak", "Chorvoq", "Чимган", "Chimgan", "Chimyon", "Бельдерсай",
-    "Beldersay", "Bo‘stonliq", "Parkent", "Qibray", "Зангиота", "Zangiota"
-]
-
 AMENITY_PATTERNS = {
     "pool": re.compile(r"\b(бассейн|hovuz|hovz|pool)\b", re.I),
     "billiards": re.compile(r"\b(бильярд|bilyard)\b", re.I),
@@ -60,7 +60,6 @@ AMENITY_PATTERNS = {
     "sauna": re.compile(r"\b(сауна|banya|баня)\b", re.I),
     "wifi": re.compile(r"\b(wi[- ]?fi|вай[- ]?фай)\b", re.I),
     "ac": re.compile(r"\b(кондиционер|konditsioner)\b", re.I),
-    "parking": re.compile(r"\b(парковк\w*|автостоянк\w*|parking)\b", re.I),
     "terrace": re.compile(r"\b(террас\w*)\b", re.I),
     "garden_bbq": re.compile(r"\b(сад|мангал|barbekyu|barbecue|bbq)\b", re.I),
 }
@@ -81,6 +80,7 @@ UZ_CYR2LAT = {
 
 # CI flag (GitHub Actions sets CI=1)
 CI = os.getenv("CI", "0") == "1"
+TASHKENT = ZoneInfo("Asia/Tashkent")
 
 # ==== LOGGING ====
 logging.basicConfig(
@@ -90,16 +90,14 @@ logging.basicConfig(
 )
 
 # ==== HELPERS ====
-def detect_script(s: str) -> str:
-    if not s: return "unknown"
-    ru = re.search(r"[А-Яа-яЁё]", s)
-    uz_cyr = re.search(r"[ҚқҒғЎўҲҳ]", s)
-    lat = re.search(r"[A-Za-z]", s)
-    buckets = [bool(ru or uz_cyr), bool(lat)]
-    if all(buckets): return "mixed"
-    if ru or uz_cyr: return "uz_cyr" if uz_cyr and not ru else "ru"
-    if lat: return "uz_lat"
-    return "unknown"
+def now_local_str() -> str:
+    return datetime.now(TASHKENT).strftime("%Y-%m-%d %H:%M:%S")
+
+def page_url(base: str, page: int) -> str:
+    if page <= 1:
+        return base
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}page={page}"
 
 def uz_cyr_to_lat(s: str) -> str:
     return "".join(UZ_CYR2LAT.get(ch, ch) for ch in s)
@@ -169,12 +167,34 @@ def get_listing_id(url:str) -> str:
     if m: return m.group(1)
     return url.rstrip("/").split("/")[-1]
 
-def parse_posted_dt(dt_text:str) -> Optional[str]:
+def parse_posted_dt_text(dt_text:str) -> Optional[str]:
+    """Return 'YYYY-MM-DD HH:MM:SS' in Asia/Tashkent, or None."""
     try:
         dt = dtparser.parse(dt_text, dayfirst=True)
-        return dt.astimezone().isoformat()
+        return dt.astimezone(TASHKENT).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return None
+
+def extract_ad_id(soup: BeautifulSoup) -> Optional[str]:
+    """
+    Extract OLX 'ID...' from the ad page.
+    We look for a dedicated node, otherwise fall back to a regex scan.
+    """
+    # direct nodes sometimes exist
+    for sel in ['[data-cy="ad_id"]', '[data-testid="ad-id"]', '[data-testid="ad_id"]']:
+        el = soup.select_one(sel)
+        if el:
+            txt = el.get_text(" ", strip=True)
+            m = re.search(r"\bID[:\s\-]*([0-9A-Za-z]+)\b", txt, re.I)
+            if m:
+                return "ID" + m.group(1)
+
+    # broad scan
+    txt = soup.get_text(" ", strip=True)[:2000]
+    m = re.search(r"\bID[:\s\-]*([0-9A-Za-z]+)\b", txt, re.I)
+    if m:
+        return "ID" + m.group(1)
+    return None
 
 # === Google Sheets helpers (ensure worksheet + header) ===
 def get_google_sheet():
@@ -185,13 +205,11 @@ def get_google_sheet():
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_JSON, scopes=scopes)
     gc = gspread.authorize(creds)
 
-    # Open or create spreadsheet
     try:
         sh = gc.open(SPREADSHEET_NAME)
     except gspread.SpreadsheetNotFound:
         sh = gc.create(SPREADSHEET_NAME)
 
-    # Open or create worksheet
     try:
         ws = sh.worksheet(WORKSHEET_NAME)
     except gspread.WorksheetNotFound:
@@ -245,9 +263,15 @@ def update_google_sheet(rows:List[List[Any]], header:List[str], pk_col:int, old_
         logging.info("Sheet: updated %d existing rows", len(need_update))
 
 # ==== SCRAPER ====
-def scrape_olx_listings() -> Tuple[List[str], str]:
-    """Return (ad_urls, page_html) for fallback parsing if needed."""
-    urls: List[str] = []
+def scrape_olx_listings() -> Tuple[List[str], List[str]]:
+    """
+    Return (all_ad_urls, list_pages_htmls_for_fallback).
+    We paginate across the category pages.
+    """
+    all_urls: List[str] = []
+    pages_html: List[str] = []
+    empty_streak = 0
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -267,9 +291,11 @@ def scrape_olx_listings() -> Tuple[List[str], str]:
         page.set_default_timeout(60_000)
         page.set_default_navigation_timeout(120_000)
 
-        for attempt in range(2):
+        for pgno in range(1, MAX_PAGES + 1):
+            url = page_url(OLX_START_URL, pgno)
             try:
-                page.goto(OLX_START_URL, wait_until="domcontentloaded", timeout=120_000)
+                page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+                # Cookie banner (ru/uz/en)
                 for sel in ['button:has-text("Принять")',
                             'button:has-text("Qabul qilish")',
                             'button:has-text("Accept")']:
@@ -279,29 +305,41 @@ def scrape_olx_listings() -> Tuple[List[str], str]:
                     except Exception:
                         pass
                 page.wait_for_selector('a[href*="/d/obyavlenie/"]', timeout=30_000)
-                break
             except PWTimeoutError:
-                if attempt == 0:
-                    page.wait_for_timeout(2000)
-                    continue
-                else:
-                    try: page.screenshot(path="listings_timeout.png", full_page=True)
-                    except Exception: pass
-                    raise
+                # treat as empty and continue; might be tail
+                empty_streak += 1
+                if empty_streak >= STOP_AFTER_EMPTY:
+                    break
+                continue
 
-        html = page.content()
-        soup = BeautifulSoup(html, "lxml")
-        for a in soup.select('a[href*="/d/obyavlenie/"]'):
-            href = a.get("href")
-            if not href: continue
-            if href.startswith("/"):
-                href = "https://www.olx.uz" + href
-            urls.append(href)
+            html = page.content()
+            pages_html.append(html)
+            soup = BeautifulSoup(html, "lxml")
+
+            page_urls = []
+            for a in soup.select('a[href*="/d/obyavlenie/"]'):
+                href = a.get("href")
+                if not href:
+                    continue
+                if href.startswith("/"):
+                    href = "https://www.olx.uz" + href
+                page_urls.append(href)
+
+            page_urls = list(set(page_urls))
+            if not page_urls:
+                empty_streak += 1
+            else:
+                empty_streak = 0
+                all_urls.extend(page_urls)
+
+            page.wait_for_timeout(500)  # small backoff
+            if empty_streak >= STOP_AFTER_EMPTY:
+                break
 
         context.close()
         browser.close()
 
-    return sorted(set(urls)), html
+    return sorted(set(all_urls)), pages_html
 
 def parse_list_grid(html: str) -> List[Dict[str, Any]]:
     """Fallback: extract minimal rows straight from the listing grid (no per-ad navigation)."""
@@ -323,7 +361,7 @@ def parse_list_grid(html: str) -> List[Dict[str, Any]]:
         price_text = price_el.get_text(strip=True) if price_el else None
         price_uzs = int(re.sub(r"[^\d]", "", price_text)) if price_text and re.search(r"\d", price_text) else None
         negotiable = False
-        if price_text and ("договорная" in price_text.lower() or "kelishiladi" in price_text.lower()):
+        if price_text and ("договорная" in (price_text or "").lower() or "kelishiladi" in (price_text or "").lower()):
             price_uzs = None
             negotiable = True
 
@@ -340,26 +378,23 @@ def parse_list_grid(html: str) -> List[Dict[str, Any]]:
             else:
                 region = place
 
-        scrape_ts = datetime.now().astimezone().isoformat()
-        full_text = title or ""
-        lang_detect = detect_script(full_text)
-        norm_text = canon_text(full_text)
-        flags, rules = extract_flags(full_text + " " + norm_text)
+        flags, rules = extract_flags(title or "")
         amenities = "|".join([k for k,v in flags.items() if v])
 
         rows.append({
-            "scrape_ts": scrape_ts,
+            "scrape_ts": now_local_str(),
             "listing_id": lid,
+            "ad_id": None,
             "url": href,
             "title": title,
             "price_uzs": price_uzs,
             "negotiable": negotiable,
             "region": region,
             "district": district,
+            "posted_dt_local": None,
             "rooms": None,
             "capacity_beds": None,
             "area_m2": None,
-            "posted_dt_local": None,
             "seller_name": None,
             "seller_type": None,
             "seller_phone": None,
@@ -375,16 +410,13 @@ def parse_list_grid(html: str) -> List[Dict[str, Any]]:
             "has_sauna": flags.get("sauna", False),
             "has_wifi": flags.get("wifi", False),
             "has_ac": flags.get("ac", False),
-            "has_parking": flags.get("parking", False),
             "has_terrace": flags.get("terrace", False),
             "has_garden": flags.get("garden_bbq", False),
-            "lang_detect": lang_detect
         })
     return rows
 
 def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
     try:
-        scrape_ts = datetime.now().astimezone().isoformat()
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(user_agent=random.choice(UA_LIST),
@@ -402,7 +434,7 @@ def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
                 except Exception: pass
                 return None
 
-            # Detect bot/challenge pages
+            # detect bot/challenge
             page_text = (pg.content() or "").lower()
             for bad in ["verify", "captcha", "access denied", "пожалуйста, подтвердите", "robot", "are you human"]:
                 if bad in page_text:
@@ -418,6 +450,8 @@ def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
             soup = BeautifulSoup(pg.content(), "lxml")
 
             listing_id = get_listing_id(url)
+            ad_id = extract_ad_id(soup)
+
             title_el = soup.find("h1")
             title = title_el.text.strip() if title_el else None
 
@@ -447,10 +481,11 @@ def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
                     area_m2 = int(re.sub(r"[^\d]", "", txt)) if re.search(r"\d", txt) else None
 
             posted_dt_local = None
+            # typical text like "Опубликовано 18 августа 2025 г., 14:05"
             for span in soup.find_all("span"):
                 tx = span.text.strip()
                 if "Опубликовано" in tx or "E'lon qilingan" in tx:
-                    posted_dt_local = parse_posted_dt(tx)
+                    posted_dt_local = parse_posted_dt_text(tx)
                     break
 
             seller_name = seller_type = None
@@ -484,7 +519,6 @@ def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
             desc_el = soup.find("div", {"data-testid":"ad-description"})
             description = desc_el.text.strip() if desc_el else ""
             full_text = (title or "") + " " + description
-            lang_detect = detect_script(full_text)
             norm_text = canon_text(full_text)
             flags, rules = extract_flags(full_text + " " + norm_text)
             amenities = "|".join([k for k,v in flags.items() if v])
@@ -497,7 +531,6 @@ def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
             has_sauna = flags.get("sauna",False)
             has_wifi = flags.get("wifi",False)
             has_ac = flags.get("ac",False)
-            has_parking = flags.get("parking",False)
             has_terrace = flags.get("terrace",False)
             has_garden = flags.get("garden_bbq",False)
 
@@ -511,18 +544,19 @@ def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
             browser.close()
 
             return {
-                "scrape_ts": scrape_ts,
+                "scrape_ts": now_local_str(),
                 "listing_id": listing_id,
+                "ad_id": ad_id,
                 "url": url,
                 "title": title,
                 "price_uzs": price_uzs,
                 "negotiable": negotiable,
                 "region": region,
                 "district": district,
+                "posted_dt_local": posted_dt_local,
                 "rooms": rooms,
                 "capacity_beds": capacity_beds,
                 "area_m2": area_m2,
-                "posted_dt_local": posted_dt_local,
                 "seller_name": seller_name,
                 "seller_type": seller_type,
                 "seller_phone": seller_phone,
@@ -538,10 +572,8 @@ def scrape_olx_ad(url:str) -> Optional[Dict[str,Any]]:
                 "has_sauna": has_sauna,
                 "has_wifi": has_wifi,
                 "has_ac": has_ac,
-                "has_parking": has_parking,
                 "has_terrace": has_terrace,
                 "has_garden": has_garden,
-                "lang_detect": lang_detect
             }
 
     except Exception as e:
@@ -554,23 +586,20 @@ def main():
     scraped_ids = set(state.get("listing_ids", []))
 
     header = [
-        "scrape_ts","listing_id","url","title","price_uzs","negotiable","region","district",
-        "rooms","capacity_beds","area_m2","posted_dt_local","seller_name","seller_type",
-        "seller_phone","seller_phone_hash","views_count","amenities","rules","photo_count",
-        "has_pool","has_billiards","has_karaoke","has_table_tennis","has_sauna","has_wifi",
-        "has_ac","has_parking","has_terrace","has_garden","lang_detect"
+        "scrape_ts","listing_id","ad_id","url","title","price_uzs","negotiable",
+        "region","district","posted_dt_local","rooms","capacity_beds","area_m2",
+        "seller_name","seller_type","seller_phone","seller_phone_hash","views_count",
+        "amenities","rules","photo_count","has_pool","has_billiards","has_karaoke",
+        "has_table_tennis","has_sauna","has_wifi","has_ac","has_terrace","has_garden"
     ]
     pk_col = 1  # listing_id
 
-    # Scrape listing URLs (+ page HTML for fallback)
-    ad_urls, listings_html = scrape_olx_listings()
+    # Scrape listing URLs (+ page HTMLs for fallback)
+    ad_urls, pages_html = scrape_olx_listings()
     rows = []
     new_listing_ids = set(scraped_ids)
 
-    # Counters for diagnostics
-    skipped_keyword = 0
-    failed_nav = 0
-    parsed_ok = 0
+    parsed_ok = failed_nav = 0
 
     for url in tqdm(ad_urls, desc="Scraping ads"):
         random_delay()
@@ -579,27 +608,23 @@ def main():
             failed_nav += 1
             continue
 
-        # Extra keyword guard only for local runs (CI already category-filters)
-        if (not CI) and (not keyword_match((ad_data.get("title") or "") + " " + (ad_data.get("amenities") or ""))):
-            skipped_keyword += 1
-            continue
-
         listing_id = ad_data["listing_id"]
         new_listing_ids.add(listing_id)
         rows.append([ad_data.get(h) for h in header])
         parsed_ok += 1
 
-    logging.info("SUMMARY: found=%d parsed_ok=%d failed_nav=%d skipped_keyword=%d",
-                 len(ad_urls), parsed_ok, failed_nav, skipped_keyword)
+    logging.info("SUMMARY: found=%d parsed_ok=%d failed_nav=%d", len(ad_urls), parsed_ok, failed_nav)
 
-    # Fallback: if all per-ad scrapes failed but we have URLs, parse the grid
+    # Fallback across listing pages if nothing parsed
     if parsed_ok == 0 and ad_urls:
-        logging.warning("Per-ad scraping failed (parsed_ok=0). Using list-page fallback.")
-        grid_rows = parse_list_grid(listings_html)
-        for ad in grid_rows:
-            new_listing_ids.add(ad["listing_id"])
-            rows.append([ad.get(h) for h in header])
-        logging.info("Fallback added %d rows from listing grid.", len(grid_rows))
+        logging.warning("Per-ad scraping failed (parsed_ok=0). Using list-page fallback across pages.")
+        added = 0
+        for html in pages_html:
+            for ad in parse_list_grid(html):
+                new_listing_ids.add(ad["listing_id"])
+                rows.append([ad.get(h) for h in header])
+                added += 1
+        logging.info("Fallback added %d rows from listing grid.", added)
 
     # Read existing sheet data for updates
     try:
@@ -615,18 +640,17 @@ def main():
         update_google_sheet(rows, header, pk_col, old_data)
 
     # Save local CSV
-    today = datetime.now().strftime("%Y%m%d")
+    today = datetime.now(TASHKENT).strftime("%Y%m%d")
     csv_path = LOCAL_CSV_PATTERN.format(date=today)
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(header)
-        for row in rows:
-            writer.writerow(row)
+        writer.writerows(rows)
     logging.info("Saved local CSV: %s", csv_path)
 
     # Save state
     state["listing_ids"] = list(new_listing_ids)
-    state["last_run_ts"] = datetime.now().astimezone().isoformat()
+    state["last_run_ts"] = now_local_str()
     state["last_scrape_count"] = len(rows)
     save_state(STATE_FILE, state)
     logging.info("Done. Scraped %d ads.", len(rows))
