@@ -1,5 +1,5 @@
-start:   2025-08-20 12:50:08 +05
-end:     2025-08-20 12:53:23 +05
-duration_seconds: 195
-duration_hms: 00:03:15
+start:   2025-08-20 12:55:45 +05
+end:     2025-08-20 12:55:47 +05
+duration_seconds: 1
+duration_hms: 00:00:01
 status:  failure
