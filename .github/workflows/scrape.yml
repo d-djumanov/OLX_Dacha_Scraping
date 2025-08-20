@@ -9,7 +9,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write  # to commit updated state.json
+  contents: write  # commit last_run.txt, runs_log.csv, state.json
 
 jobs:
   run-scraper:
@@ -42,10 +42,44 @@ jobs:
           $SERVICE_ACCOUNT_JSON
           JSON
 
+      - name: Mark start time (Tashkent)
+        run: |
+          echo "START_TS=$(date +%s)" >> $GITHUB_ENV
+          echo "START_HUMAN=$(TZ=Asia/Tashkent date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_ENV
+
       - name: Run scraper
         working-directory: Project
         run: |
           python scrape_olx_dacha_tashkent.py
+
+      - name: Capture job status for logging
+        if: ${{ always() }}
+        run: |
+          echo "JOB_STATUS=${{ job.status }}" >> $GITHUB_ENV
+
+      - name: Write last_run.txt and append runs_log.csv
+        if: ${{ always() }}
+        run: |
+          END_TS=$(date +%s)
+          END_HUMAN=$(TZ=Asia/Tashkent date '+%Y-%m-%d %H:%M:%S %Z')
+          DURATION=$((END_TS - START_TS))
+          H=$((DURATION/3600)); M=$(((DURATION%3600)/60)); S=$((DURATION%60))
+          DURATION_HMS=$(printf "%02d:%02d:%02d" "$H" "$M" "$S")
+
+          # Overwrite summary file
+          printf "start:   %s\nend:     %s\nduration_seconds: %s\nduration_hms: %s\nstatus:  %s\n" \
+            "$START_HUMAN" "$END_HUMAN" "$DURATION" "$DURATION_HMS" "$JOB_STATUS" > Project/last_run.txt
+
+          # Append CSV log with header-once
+          LOG=Project/runs_log.csv
+          if [ ! -f "$LOG" ]; then
+            echo "date_local,start_local,end_local,duration_seconds,duration_hms,run_id,run_number,sha,status" > "$LOG"
+          fi
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-8)
+          DATE_LOCAL=$(TZ=Asia/Tashkent date '+%Y-%m-%d')
+          printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+            "$DATE_LOCAL" "$START_HUMAN" "$END_HUMAN" "$DURATION" "$DURATION_HMS" \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$SHORT_SHA" "$JOB_STATUS" >> "$LOG"
 
       - name: Upload CSV artifact
         uses: actions/upload-artifact@v4
@@ -54,11 +88,11 @@ jobs:
           path: Project/olx_dacha_tashkent_raw_*.csv
           if-no-files-found: ignore
 
-      - name: Commit updated state.json (dedupe persistence)
+      - name: Commit updated state.json, last_run.txt, runs_log.csv
         if: ${{ always() }}
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add Project/state.json
-          git commit -m "Update state.json [skip ci]" || echo "No changes"
+          git add Project/state.json Project/last_run.txt Project/runs_log.csv
+          git commit -m "Update state, last_run, runs_log [skip ci]" || echo "No changes"
           git push
