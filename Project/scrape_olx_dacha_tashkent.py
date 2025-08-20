@@ -9,6 +9,7 @@ from datetime import datetime
 from time import sleep
 from typing import List, Dict, Any, Optional
 from tqdm import tqdm
+from playwright._impl._errors import TimeoutError as PWTimeoutError
 
 import pandas as pd
 from rapidfuzz import fuzz
@@ -278,52 +279,80 @@ def update_google_sheet(rows:List[List[Any]], header:List[str], pk_col:int, old_
         sheet.update(f"A{ix}:{chr(65+len(header)-1)}{ix}", [row])
 
 # ==== SCRAPER ====
-def scrape_olx_listings():
-    logging.info("Scraping OLX listings...")
+def scrape_olx_listings() -> List[str]:
+    from playwright.sync_api import sync_playwright
+    urls: List[str] = []
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent=random.choice(UA_LIST))
+        context = browser.new_context(
+            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"),
+            locale="ru-RU",
+            timezone_id="Asia/Tashkent",
+        )
+
+        # Block heavy assets so the page settles faster in CI
+        def _route(route):
+            if route.request.resource_type in {"image", "media", "font"}:
+                return route.abort()
+            route.continue_()
+        context.route("**/*", _route)
+
         page = context.new_page()
-        # Navigate to the start URL and wait for the results to load.  We use
-        # networkidle to ensure that the initial set of listings has been
-        # downloaded.  Without waiting, page.content() may return before
-        # dynamic results render and no ad links will be found.
-        page.goto(OLX_START_URL, timeout=60000, wait_until="networkidle")
-        # Ensure at least one listing card is present before reading the HTML.
-        try:
-            page.wait_for_selector('a[href*="/d/obyavlenie/"]', timeout=10000)
-        except Exception:
-            pass
+        page.set_default_timeout(60_000)
+        page.set_default_navigation_timeout(120_000)
+
+        # Robust navigation: DOM loaded + explicit selector wait + one retry
+        for attempt in range(2):
+            try:
+                page.goto(OLX_START_URL, wait_until="domcontentloaded", timeout=120_000)
+
+                # Cookie consent (RU / UZ / EN)
+                for sel in [
+                    'button:has-text("Принять")',
+                    'button:has-text("Qabul qilish")',
+                    'button:has-text("Accept")',
+                ]:
+                    try:
+                        page.locator(sel).first.click(timeout=1500)
+                        break
+                    except Exception:
+                        pass
+
+                # Wait for any ad link to appear
+                page.wait_for_selector('a[href*="/d/obyavlenie/"]', timeout=30_000)
+                break  # success
+            except PWTimeoutError:
+                if attempt == 0:
+                    # brief backoff then retry once
+                    try:
+                        page.wait_for_timeout(2000)
+                    except Exception:
+                        pass
+                    continue
+                else:
+                    # helpful screenshot on failure in CI
+                    try:
+                        page.screenshot(path="listings_timeout.png", full_page=True)
+                    except Exception:
+                        pass
+                    raise
+
         html = page.content()
         soup = BeautifulSoup(html, "lxml")
-        # Find pagination
-        pagination = soup.find("ul", {"data-testid": "pagination-list"})
-        last_page = 1
-        if pagination:
-            try:
-                last_page = int(pagination.find_all("li")[-2].text)
-            except Exception:
-                last_page = 1
-        ad_links = set()
-        for page_num in range(1, last_page+1):
-            url = OLX_START_URL + f"&page={page_num}" if page_num > 1 else OLX_START_URL
-            page.goto(url, timeout=60000, wait_until="networkidle")
-            try:
-                page.wait_for_selector('a[href*="/d/obyavlenie/"]', timeout=10000)
-            except Exception:
-                pass
-            html = page.content()
-            soup = BeautifulSoup(html, "lxml")
-            # Find all ad links
-            for link in soup.select('a[href*="/d/obyavlenie/"]'):
-                href = link.get("href")
-                if href:
-                    full_url = "https://www.olx.uz" + href if href.startswith("/") else href
-                    ad_links.add(full_url)
-            random_delay()
-        logging.info("Found %d ad URLs.", len(ad_links))
+        for a in soup.select('a[href*="/d/obyavlenie/"]'):
+            href = a.get("href")
+            if not href:
+                continue
+            if href.startswith("/"):
+                href = "https://www.olx.uz" + href
+            urls.append(href)
+
+        context.close()
         browser.close()
-    return list(ad_links)
+
+    return sorted(set(urls))
 
 def scrape_olx_ad(url:str, page=None) -> Optional[Dict[str,Any]]:
     try:
@@ -335,7 +364,17 @@ def scrape_olx_ad(url:str, page=None) -> Optional[Dict[str,Any]]:
             # Navigate to the ad page and wait for the network to be idle.  This
             # ensures that dynamic components such as the description and
             # breadcrumb information are available in the DOM.
-            pg.goto(url, timeout=60000, wait_until="networkidle")
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+                # Wait for a key element so we know the ad loaded
+                page.wait_for_selector("h1, [data-cy='ad_description'], section:has-text('Описание')", timeout=30_000)
+            except PWTimeoutError:
+                try:
+                    page.screenshot(path=f"ad_timeout_{get_listing_id(url)}.png", full_page=True)
+                except Exception:
+                    pass
+                return None
+
             # Wait for the description container (if it exists) to be attached.
             try:
                 pg.wait_for_selector('div[data-testid="ad-description"]', timeout=10000)
