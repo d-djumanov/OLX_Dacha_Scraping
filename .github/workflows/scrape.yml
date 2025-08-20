@@ -20,7 +20,8 @@ jobs:
     env:
       TZ: Asia/Tashkent
       SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-      PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
+      PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
+
 
     steps:
       - name: Checkout
@@ -85,6 +86,10 @@ jobs:
           key: ${{ runner.os }}-pw-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pw-
+      - name: Clean accidental relative PW dir from previous runs
+        run: |
+          rm -rf "${{ steps.detect.outputs.dir }}/~"
+
 
       - name: Install Playwright system deps
         run: npx playwright install --with-deps
