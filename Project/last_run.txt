@@ -1,5 +1,5 @@
-start:   2025-08-21 10:13:49 +05
-end:     2025-08-21 10:31:08 +05
-duration_seconds: 1039
-duration_hms: 00:17:19
-status:  failure
+start:   2025-08-21 12:15:55 +05
+end:     2025-08-21 12:29:57 +05
+duration_seconds: 842
+duration_hms: 00:14:02
+status:  success
