@@ -217,51 +217,89 @@ def get_google_sheet():
 
     return ws
 
-def _col_label(n: int) -> str:
-    label = ""
+# ---- Helpers for Sheets batching/retry ----
+def _col_to_a1(n: int) -> str:
+    """1 -> A, 26 -> Z, 27 -> AA ..."""
+    s = ""
     while n:
         n, r = divmod(n - 1, 26)
-        label = chr(65 + r) + label
-    return label
+        s = chr(65 + r) + s
+    return s
 
-def update_google_sheet(rows:List[List[Any]], header:List[str], pk_col:int, old_data:pd.DataFrame):
+def _gsheet_retry(fn, attempts=6, base_delay=1.0):
+    """Retry on quota/rate-limit errors with exponential backoff."""
+    delay = base_delay
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            msg = str(e).lower()
+            if any(k in msg for k in ("rate_limit", "quota", "resource_exhausted", "429")) and i < attempts - 1:
+                sleep(delay + random.uniform(0, 0.4))
+                delay = min(delay * 2, 30)
+                continue
+            raise
+
+# You can tweak via env if you like; defaults are safe.
+_SHEETS_THROTTLE = float(os.getenv("SHEETS_THROTTLE_SEC", "0"))   # e.g., 0.4
+_MAX_BATCH = int(os.getenv("SHEETS_MAX_UPDATE_BATCH", "200"))     # requests per batch
+
+def update_google_sheet(rows: List[List[Any]], header: List[str], pk_col: int, old_data: pd.DataFrame):
+    """
+    Insert new rows and batch-update changed rows to avoid hitting per-minute write quotas.
+    """
     sheet = get_google_sheet()
+    last_col_letter = _col_to_a1(len(header))
 
-    # Ensure header row exists
-    data = sheet.get_all_values()
-    if not data:
-        sheet.append_row(header)
-        data = [header]
+    # Load existing sheet to decide insert vs update
+    sheet_data = sheet.get_all_values()
+    sheet_df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0]) if sheet_data else pd.DataFrame(columns=header)
 
-    sheet_df = pd.DataFrame(data[1:], columns=data[0]) if len(data) > 1 else pd.DataFrame(columns=header)
+    to_insert: List[List[Any]] = []
+    to_update: List[tuple[int, List[Any]]] = []  # (1-based row index, row values)
 
-    need_update, need_insert = [], []
     for row in rows:
         pk = row[pk_col]
-        found = sheet_df[sheet_df.iloc[:, pk_col] == pk] if not sheet_df.empty else pd.DataFrame()
+        found = sheet_df[sheet_df.iloc[:, pk_col] == pk]
         if found.empty:
-            need_insert.append(row)
+            to_insert.append(row)
         else:
-            ix = found.index[0]
+            ix = int(found.index[0])
             old_row = found.iloc[0]
             changed = False
-            for field in ["price_uzs","negotiable","seller_phone","views_count"]:
-                col_idx = header.index(field)
-                if str(old_row.get(field, "")) != str(row[col_idx]):
-                    changed = True
-                    break
+            # Only compare a few frequently changing fields
+            for field in ["price_uzs", "negotiable", "seller_phone", "views_count"]:
+                if field in header:
+                    col_idx = header.index(field)
+                    if str(old_row.get(field, "")) != str(row[col_idx]):
+                        changed = True
+                        break
             if changed:
-                need_update.append((ix+2, row))  # +2 = header + 1-indexing
+                # +2 => header row + 1-based indexing
+                to_update.append((ix + 2, row))
 
-    if need_insert:
-        sheet.append_rows(need_insert, value_input_option="USER_ENTERED")
-        logging.info("Sheet: inserted %d new rows", len(need_insert))
-    for ix, row in need_update:
-        last_col = _col_label(len(header))
-        sheet.update(f"A{ix}:{last_col}{ix}", [row])
-    if need_update:
-        logging.info("Sheet: updated %d existing rows", len(need_update))
+    # 1) Append new rows in chunks
+    if to_insert:
+        for i in range(0, len(to_insert), 200):
+            chunk = to_insert[i:i + 200]
+            _gsheet_retry(lambda: sheet.append_rows(chunk, value_input_option="USER_ENTERED"))
+            if _SHEETS_THROTTLE:
+                sleep(_SHEETS_THROTTLE)
 
+    # 2) Batch update changed rows (single or few API calls)
+    if to_update:
+        # Build ValueRanges for values.batchUpdate
+        data = []
+        for rix, vals in to_update:
+            rng = f"A{rix}:{last_col_letter}{rix}"
+            data.append({"range": rng, "values": [vals]})
+
+        # Worksheet.batch_update() accepts list of {'range','values'}
+        for i in range(0, len(data), _MAX_BATCH):
+            chunk = data[i:i + _MAX_BATCH]
+            _gsheet_retry(lambda: sheet.batch_update(chunk, value_input_option="USER_ENTERED"))
+            if _SHEETS_THROTTLE:
+                sleep(_SHEETS_THROTTLE)
 # ==== SCRAPER ====
 def scrape_olx_listings() -> Tuple[List[str], List[str]]:
     """
