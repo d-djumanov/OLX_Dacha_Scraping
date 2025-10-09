@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+
+# Service account credentials (already in secrets, don't commit)
+dacha-data-scraping-*.json
+
+# But keep state.json (managed by the scraper)
+!state.json
+
+# Temporary files
+*.tmp
+*.swp
+*~
+.DS_Store
+
+# CSV output files (uploaded as artifacts)
+olx_dacha_tashkent_raw_*.csv
+
+# Debug screenshots
+ad_timeout_*.png
+ad_challenge_*.png
+ad_challenge_*.html
+
+# IDEs
+.vscode/
+.idea/
+*.iml
