@@ -30,6 +30,11 @@ playwright install
 scrape_ts | listing_id | url | title | price_uzs | negotiable | region | district | rooms | capacity_beds | area_m2 | posted_dt_local | seller_name | seller_type | seller_phone | seller_phone_hash | views_count | amenities | rules | photo_count | has_pool | has_billiards | has_karaoke | has_table_tennis | has_sauna | has_wifi | has_ac | has_parking | has_terrace | has_garden | lang_detect
 ```
 
+**Automatic Worksheet Management:**
+- When `raw_listings` reaches 50,000 rows, the scraper automatically creates a new worksheet named `raw_listings_YYYYMM` (e.g., `raw_listings_202510` for October 2025)
+- Headers are automatically added to new worksheets
+- The scraper always uses the most recent worksheet that has capacity
+
 ### 4. Running
 
 ```bash
@@ -37,8 +42,9 @@ python scrape_olx_dacha_tashkent.py
 ```
 
 - Produces: `olx_dacha_tashkent_raw_{YYYYMMDD}.csv`
-- Updates Google Sheet (`OLX_Dacha_Tashkent` → `raw_listings`)
+- Updates Google Sheet (`OLX_Dacha_Tashkent` → `raw_listings` or most recent dated worksheet)
 - Maintains `state.json` for deduplication
+- Automatically creates new worksheets when capacity is reached (50,000 rows)
 
 ### 5. Cron Job Example
 
@@ -92,5 +98,15 @@ Daily at 04:00 Tashkent time:
 ## Support
 
 If you hit quota limits, check Google API project/service account sharing. For Playwright troubleshooting, rerun `playwright install`.
+
+### Worksheet Capacity Management
+
+The scraper automatically manages Google Sheets capacity:
+- Maximum rows per worksheet: 50,000 (configurable via `MAX_SHEET_ROWS` in code)
+- When full, creates new worksheet: `raw_listings_YYYYMM`
+- Automatically selects the most recent worksheet with capacity
+- Headers are initialized automatically in new worksheets
+
+If you need to adjust the threshold, modify `MAX_SHEET_ROWS` in `scrape_olx_dacha_tashkent.py`.
 
 ---
