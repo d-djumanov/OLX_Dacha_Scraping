@@ -197,7 +197,14 @@ def extract_ad_id(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 # === Google Sheets helpers (ensure worksheet + header) ===
+# Maximum rows before creating a new worksheet
+MAX_SHEET_ROWS = 50000
+
 def get_google_sheet():
+    """
+    Get or create the appropriate Google Sheet worksheet.
+    If the current worksheet is full (>= MAX_SHEET_ROWS), create a new one with date-based naming.
+    """
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -210,12 +217,54 @@ def get_google_sheet():
     except gspread.SpreadsheetNotFound:
         sh = gc.create(SPREADSHEET_NAME)
 
+    # Get current month for naming new worksheets
+    current_month = datetime.now(TASHKENT).strftime("%Y%m")
+    
+    # Try to get the base worksheet first
     try:
         ws = sh.worksheet(WORKSHEET_NAME)
+        # Check if it's getting full
+        row_count = ws.row_count
+        data_rows = len(ws.get_all_values())
+        
+        if data_rows >= MAX_SHEET_ROWS:
+            logging.warning("Worksheet '%s' has %d rows (>= %d), creating new dated worksheet", 
+                          WORKSHEET_NAME, data_rows, MAX_SHEET_ROWS)
+            # Create a new worksheet with current month
+            new_ws_name = f"{WORKSHEET_NAME}_{current_month}"
+            try:
+                ws = sh.worksheet(new_ws_name)
+                logging.info("Using existing worksheet: %s", new_ws_name)
+            except gspread.WorksheetNotFound:
+                ws = sh.add_worksheet(title=new_ws_name, rows=1000, cols=40)
+                logging.info("Created new worksheet: %s", new_ws_name)
+        return ws
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=40)
-
-    return ws
+        # Base worksheet doesn't exist, try to find most recent dated one
+        all_worksheets = sh.worksheets()
+        dated_sheets = [w for w in all_worksheets if w.title.startswith(WORKSHEET_NAME)]
+        
+        if dated_sheets:
+            # Sort by title (date suffix) and get the most recent
+            dated_sheets.sort(key=lambda w: w.title, reverse=True)
+            ws = dated_sheets[0]
+            
+            # Check if this one is also full
+            data_rows = len(ws.get_all_values())
+            if data_rows >= MAX_SHEET_ROWS:
+                new_ws_name = f"{WORKSHEET_NAME}_{current_month}"
+                try:
+                    ws = sh.worksheet(new_ws_name)
+                    logging.info("Using existing worksheet: %s", new_ws_name)
+                except gspread.WorksheetNotFound:
+                    ws = sh.add_worksheet(title=new_ws_name, rows=1000, cols=40)
+                    logging.info("Created new worksheet: %s", new_ws_name)
+            return ws
+        else:
+            # No worksheets exist, create the base one
+            ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=40)
+            logging.info("Created base worksheet: %s", WORKSHEET_NAME)
+            return ws
 
 # ---- Helpers for Sheets batching/retry ----
 def _col_to_a1(n: int) -> str:
@@ -253,7 +302,14 @@ def update_google_sheet(rows: List[List[Any]], header: List[str], pk_col: int, o
 
     # Load existing sheet to decide insert vs update
     sheet_data = sheet.get_all_values()
-    sheet_df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0]) if sheet_data else pd.DataFrame(columns=header)
+    
+    # Ensure header row exists
+    if not sheet_data:
+        logging.info("Initializing header row in worksheet: %s", sheet.title)
+        _gsheet_retry(lambda: sheet.append_row(header, value_input_option="USER_ENTERED"))
+        sheet_data = [header]
+    
+    sheet_df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0]) if len(sheet_data) > 1 else pd.DataFrame(columns=header)
 
     to_insert: List[List[Any]] = []
     to_update: List[tuple[int, List[Any]]] = []  # (1-based row index, row values)
@@ -280,14 +336,24 @@ def update_google_sheet(rows: List[List[Any]], header: List[str], pk_col: int, o
 
     # 1) Append new rows in chunks
     if to_insert:
+        logging.info("Appending %d new rows to worksheet: %s", len(to_insert), sheet.title)
         for i in range(0, len(to_insert), 200):
             chunk = to_insert[i:i + 200]
-            _gsheet_retry(lambda: sheet.append_rows(chunk, value_input_option="USER_ENTERED"))
+            try:
+                _gsheet_retry(lambda: sheet.append_rows(chunk, value_input_option="USER_ENTERED"))
+                logging.info("Successfully appended chunk %d-%d", i, min(i + 200, len(to_insert)))
+            except Exception as e:
+                logging.error("Failed to append rows %d-%d: %s", i, min(i + 200, len(to_insert)), e)
+                # Check if it's a sheet capacity error
+                if "exceeds grid limits" in str(e).lower() or "limit" in str(e).lower():
+                    logging.error("Sheet appears to be at capacity. Please check sheet: %s", sheet.title)
+                raise
             if _SHEETS_THROTTLE:
                 sleep(_SHEETS_THROTTLE)
 
     # 2) Batch update changed rows (single or few API calls)
     if to_update:
+        logging.info("Updating %d changed rows in worksheet: %s", len(to_update), sheet.title)
         # Build ValueRanges for values.batchUpdate
         data = []
         for rix, vals in to_update:
@@ -297,7 +363,12 @@ def update_google_sheet(rows: List[List[Any]], header: List[str], pk_col: int, o
         # Worksheet.batch_update() accepts list of {'range','values'}
         for i in range(0, len(data), _MAX_BATCH):
             chunk = data[i:i + _MAX_BATCH]
-            _gsheet_retry(lambda: sheet.batch_update(chunk, value_input_option="USER_ENTERED"))
+            try:
+                _gsheet_retry(lambda: sheet.batch_update(chunk, value_input_option="USER_ENTERED"))
+                logging.info("Successfully updated batch %d-%d", i, min(i + _MAX_BATCH, len(data)))
+            except Exception as e:
+                logging.error("Failed to update batch %d-%d: %s", i, min(i + _MAX_BATCH, len(data)), e)
+                raise
             if _SHEETS_THROTTLE:
                 sleep(_SHEETS_THROTTLE)
 # ==== SCRAPER ====
