@@ -1,5 +1,5 @@
-start:   2025-10-08 10:13:32 +05
-end:     2025-10-08 10:28:42 +05
-duration_seconds: 910
-duration_hms: 00:15:10
-status:  success
+start:   2025-10-09 11:17:51 +05
+end:     2025-10-09 11:32:14 +05
+duration_seconds: 863
+duration_hms: 00:14:23
+status:  failure
