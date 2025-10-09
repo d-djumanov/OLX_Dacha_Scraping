@@ -197,24 +197,41 @@ def extract_ad_id(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 # === Google Sheets helpers (ensure worksheet + header) ===
-def get_google_sheet():
+def get_google_spreadsheet() -> gspread.Spreadsheet:
+    """Connects to Google and opens the spreadsheet by name."""
     scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
+        "https.www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_JSON, scopes=scopes)
     gc = gspread.authorize(creds)
-
     try:
         sh = gc.open(SPREADSHEET_NAME)
     except gspread.SpreadsheetNotFound:
         sh = gc.create(SPREADSHEET_NAME)
+    return sh
 
-    try:
-        ws = sh.worksheet(WORKSHEET_NAME)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=40)
+def get_latest_worksheet(sh: gspread.Spreadsheet, header: List[str]) -> gspread.Worksheet:
+    """Finds the latest worksheet (e.g., 'Sheet Part 3') or creates the first one."""
+    worksheets = sh.worksheets()
+    part_re = re.compile(rf"{re.escape(WORKSHEET_NAME)}(?: Part (\d+))?")
 
+    max_part = 0
+    latest_ws = None
+    for ws in worksheets:
+        match = part_re.match(ws.title)
+        if match:
+            part = int(match.group(1) or 1)
+            if part > max_part:
+                max_part = part
+                latest_ws = ws
+
+    if latest_ws:
+        return latest_ws
+
+    # No worksheet found, create the first one
+    ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=len(header) or 40)
+    ws.append_row(header, value_input_option="USER_ENTERED")
     return ws
 
 # ---- Helpers for Sheets batching/retry ----
@@ -244,16 +261,41 @@ def _gsheet_retry(fn, attempts=6, base_delay=1.0):
 _SHEETS_THROTTLE = float(os.getenv("SHEETS_THROTTLE_SEC", "0"))   # e.g., 0.4
 _MAX_BATCH = int(os.getenv("SHEETS_MAX_UPDATE_BATCH", "200"))     # requests per batch
 
-def update_google_sheet(rows: List[List[Any]], header: List[str], pk_col: int, old_data: pd.DataFrame):
-    """
-    Insert new rows and batch-update changed rows to avoid hitting per-minute write quotas.
-    """
-    sheet = get_google_sheet()
-    last_col_letter = _col_to_a1(len(header))
+def _create_new_part_worksheet(sh: gspread.Spreadsheet, header: List[str]) -> gspread.Worksheet:
+    """Creates a new worksheet with the next available part number."""
+    worksheets = sh.worksheets()
+    part_re = re.compile(rf"{re.escape(WORKSHEET_NAME)}(?: Part (\d+))?")
 
-    # Load existing sheet to decide insert vs update
-    sheet_data = sheet.get_all_values()
-    sheet_df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0]) if sheet_data else pd.DataFrame(columns=header)
+    max_part = 0
+    for ws in worksheets:
+        match = part_re.match(ws.title)
+        if match:
+            part = int(match.group(1) or 1)
+            if part > max_part:
+                max_part = part
+
+    new_part_num = max_part + 1
+    new_title = f"{WORKSHEET_NAME} Part {new_part_num}"
+
+    logging.info("Creating new worksheet: '%s'", new_title)
+    ws = sh.add_worksheet(title=new_title, rows=1000, cols=len(header) or 40)
+    _gsheet_retry(lambda: ws.append_row(header, value_input_option="USER_ENTERED"))
+    return ws
+
+def update_google_sheet(
+    sh: gspread.Spreadsheet,
+    sheet: gspread.Worksheet,
+    rows: List[List[Any]],
+    header: List[str],
+    pk_col: int,
+    old_data: pd.DataFrame
+):
+    """
+    Insert new rows and batch-update changed rows.
+    If the current sheet is full, creates a new one and continues.
+    """
+    last_col_letter = _col_to_a1(len(header))
+    sheet_df = old_data # Use pre-loaded data from the latest sheet
 
     to_insert: List[List[Any]] = []
     to_update: List[tuple[int, List[Any]]] = []  # (1-based row index, row values)
@@ -279,24 +321,34 @@ def update_google_sheet(rows: List[List[Any]], header: List[str], pk_col: int, o
                 to_update.append((ix + 2, row))
 
     # 1) Append new rows in chunks
+    current_sheet = sheet
     if to_insert:
         for i in range(0, len(to_insert), 200):
             chunk = to_insert[i:i + 200]
-            _gsheet_retry(lambda: sheet.append_rows(chunk, value_input_option="USER_ENTERED"))
+            try:
+                _gsheet_retry(lambda: current_sheet.append_rows(chunk, value_input_option="USER_ENTERED"))
+            except gspread.exceptions.APIError as e:
+                err_details = e.response.json().get("error", {})
+                if "exceeds grid limits" in err_details.get("message", ""):
+                    logging.warning("Worksheet '%s' is full. Creating a new part.", current_sheet.title)
+                    current_sheet = _create_new_part_worksheet(sh, header)
+                    _gsheet_retry(lambda: current_sheet.append_rows(chunk, value_input_option="USER_ENTERED"))
+                else:
+                    raise
+
             if _SHEETS_THROTTLE:
                 sleep(_SHEETS_THROTTLE)
 
-    # 2) Batch update changed rows (single or few API calls)
+    # 2) Batch update changed rows (operates on the latest sheet active at script start)
     if to_update:
-        # Build ValueRanges for values.batchUpdate
         data = []
         for rix, vals in to_update:
             rng = f"A{rix}:{last_col_letter}{rix}"
             data.append({"range": rng, "values": [vals]})
 
-        # Worksheet.batch_update() accepts list of {'range','values'}
         for i in range(0, len(data), _MAX_BATCH):
             chunk = data[i:i + _MAX_BATCH]
+            # Updates go to the original sheet passed in
             _gsheet_retry(lambda: sheet.batch_update(chunk, value_input_option="USER_ENTERED"))
             if _SHEETS_THROTTLE:
                 sleep(_SHEETS_THROTTLE)
@@ -665,17 +717,28 @@ def main():
         logging.info("Fallback added %d rows from listing grid.", added)
 
     # Read existing sheet data for updates
+    sh = get_google_spreadsheet()
     try:
-        sheet = get_google_sheet()
+        sheet = get_latest_worksheet(sh, header)
         sheet_data = sheet.get_all_values()
-        old_data = pd.DataFrame(sheet_data[1:], columns=sheet_data[0]) if sheet_data else pd.DataFrame(columns=header)
+        # Ensure header consistency if sheet was empty and header was just added
+        if len(sheet_data) <= 1 and all(h in header for h in (sheet_data[0] if sheet_data else [])):
+             old_data = pd.DataFrame([], columns=header)
+        else:
+             old_data = pd.DataFrame(sheet_data[1:], columns=sheet_data[0])
     except Exception as e:
         logging.warning("Could not load Google Sheet: %s", e)
         old_data = pd.DataFrame([], columns=header)
+        # Fallback to create a sheet if loading failed catastrophically
+        try:
+            sheet = get_latest_worksheet(sh, header)
+        except Exception as e_inner:
+            logging.error("Could not get or create a worksheet: %s", e_inner)
+            sheet = None
 
     # Update Google Sheet (insert/update)
-    if rows:
-        update_google_sheet(rows, header, pk_col, old_data)
+    if rows and sheet:
+        update_google_sheet(sh, sheet, rows, header, pk_col, old_data)
 
     # Save local CSV
     today = datetime.now(TASHKENT).strftime("%Y%m%d")
