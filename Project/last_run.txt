@@ -1,5 +1,5 @@
-start:   2025-10-14 10:13:25 +05
-end:     2025-10-14 10:27:48 +05
-duration_seconds: 863
-duration_hms: 00:14:23
-status:  success
+start:   
+end:     2025-10-15 16:11:18 +05
+duration_seconds: 1760526678
+duration_hms: 489035:11:18
+status:  cancelled
