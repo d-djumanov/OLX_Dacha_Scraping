@@ -367,7 +367,6 @@ def scrape_olx_listings() -> Tuple[List[str], List[str]]:
                 else:
                     # Re-raise other exceptions
                     raise
-                continue
 
             html = page.content()
             pages_html.append(html)
