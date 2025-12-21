@@ -4,6 +4,31 @@ Scrapes vacation houses/dacha listings from OLX.uz (Tashkent region), with phone
 
 ---
 
+## ⚠️ IMPORTANT NOTICE - Service Status
+
+**As of December 21, 2025**: The `olx.uz` domain is **NOT RESOLVING** and appears to be discontinued.
+
+**Error**: `net::ERR_NAME_NOT_RESOLVED at https://www.olx.uz/`
+
+### What This Means
+The OLX platform in Uzbekistan may have:
+- Been discontinued or shut down
+- Migrated to a different domain
+- Merged with another platform
+
+### What You Need to Do
+1. **Verify OLX status** in Uzbekistan (check with local users/sources)
+2. **Find the new platform** for dacha listings in Uzbekistan
+3. **Update the configuration** (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed instructions)
+
+The scraper code is working correctly, but needs the correct target URL to be configured.
+
+**Last known working date**: December 21, 2025 10:19 AM (Tashkent time)
+
+For detailed troubleshooting steps, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
+---
+
 ## Setup
 
 ### 1. Requirements
@@ -89,8 +114,31 @@ Daily at 04:00 Tashkent time:
 
 ---
 
+## Updating Target URL
+
+If OLX.uz has migrated to a new domain or you want to scrape a different platform:
+
+1. **Open** `Project/scrape_olx_dacha_tashkent.py`
+2. **Find** the `OLX_START_URL` constant (around line 34):
+   ```python
+   OLX_START_URL = "https://www.olx.uz/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
+   ```
+3. **Update** with the new URL
+4. **Test** with a small page limit first:
+   ```bash
+   export OLX_MAX_PAGES=2
+   python Project/scrape_olx_dacha_tashkent.py
+   ```
+5. **Verify** data extraction works correctly
+
+See [config.py](Project/config.py) for configuration guidance and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed migration instructions.
+
+---
+
 ## Support
 
 If you hit quota limits, check Google API project/service account sharing. For Playwright troubleshooting, rerun `playwright install`.
+
+For domain resolution issues, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
