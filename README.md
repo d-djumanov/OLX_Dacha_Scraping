@@ -23,7 +23,7 @@ The OLX platform in Uzbekistan may have:
 
 The scraper code is working correctly, but needs the correct target URL to be configured.
 
-**Last known working date**: December 21, 2025 10:19 AM (Tashkent time)
+**Last known working timestamp**: 2025-12-21 10:19:37 +05 (Tashkent time)
 
 For detailed troubleshooting steps, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 

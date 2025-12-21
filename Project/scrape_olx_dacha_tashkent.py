@@ -352,6 +352,7 @@ def scrape_olx_listings() -> Tuple[List[str], List[str]]:
                 empty_streak += 1
                 if empty_streak >= STOP_AFTER_EMPTY:
                     break
+                continue  # Skip to next page iteration
             except Exception as e:
                 error_msg = str(e)
                 # Check for DNS/Network errors

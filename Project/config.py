@@ -14,21 +14,21 @@
 #
 # TO FIX THIS:
 # 1. Research the current platform for Uzbekistan dacha listings
-# 2. Update SITE_BASE_URL below with the new domain
-# 3. Verify the LISTING_PATH still works (or update it)
+# 2. Update OLX_BASE_URL below with the new domain
+# 3. Verify the OLX_LISTING_PATH still works (or update it)
 # 4. Test with a small MAX_PAGES value (e.g., 2)
-SITE_BASE_URL = "https://www.olx.uz"
-LISTING_PATH = "/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
+OLX_BASE_URL = "https://www.olx.uz"
+OLX_LISTING_PATH = "/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
 
 # Automatically constructed - usually doesn't need changing
 # Unless the new platform uses a completely different URL structure
-START_URL = f"{SITE_BASE_URL}{LISTING_PATH}"
+OLX_START_URL = f"{OLX_BASE_URL}{OLX_LISTING_PATH}"
 
 # ==== ALTERNATIVE DOMAINS TO TRY ====
 # Uncomment and test these if olx.uz is down:
-# SITE_BASE_URL = "https://www.olx.com"  # Global OLX platform
-# SITE_BASE_URL = "https://olx.co.uz"    # Alternative TLD
-# SITE_BASE_URL = "https://NEW_PLATFORM.uz"  # New local platform
+# OLX_BASE_URL = "https://www.olx.com"  # Global OLX platform
+# OLX_BASE_URL = "https://olx.co.uz"    # Alternative TLD
+# OLX_BASE_URL = "https://NEW_PLATFORM.uz"  # New local platform
 
 # ==== SCRAPING PARAMETERS ====
 
@@ -69,7 +69,7 @@ CSV_FILENAME_PATTERN = "olx_dacha_tashkent_raw_{date}.csv"
 # If OLX.uz has moved to a new platform, you may need to:
 #
 # 1. UPDATE DOMAIN:
-#    Change SITE_BASE_URL to the new domain
+#    Change OLX_BASE_URL to the new domain
 #
 # 2. VERIFY SELECTORS:
 #    The new platform may have different CSS selectors.
