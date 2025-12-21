@@ -348,6 +348,25 @@ def scrape_olx_listings() -> Tuple[List[str], List[str]]:
                 empty_streak += 1
                 if empty_streak >= STOP_AFTER_EMPTY:
                     break
+            except Exception as e:
+                error_msg = str(e)
+                # Check for DNS/Network errors
+                if "ERR_NAME_NOT_RESOLVED" in error_msg or "Could not resolve host" in error_msg:
+                    logging.error("❌ CRITICAL: Domain resolution failed for %s", url)
+                    logging.error("The OLX.uz domain appears to be unavailable or no longer operational.")
+                    logging.error("Possible reasons:")
+                    logging.error("  1. OLX.uz service has been discontinued in Uzbekistan")
+                    logging.error("  2. The domain has migrated to a different URL")
+                    logging.error("  3. Network/DNS configuration issues")
+                    logging.error("")
+                    logging.error("ACTION REQUIRED:")
+                    logging.error("  - Verify if OLX.uz is still operational")
+                    logging.error("  - Check for alternative domains or platforms")
+                    logging.error("  - Update OLX_START_URL in the configuration if domain has changed")
+                    raise RuntimeError(f"Domain resolution failed for {url}. OLX.uz may no longer be operational.") from e
+                else:
+                    # Re-raise other exceptions
+                    raise
                 continue
 
             html = page.content()
