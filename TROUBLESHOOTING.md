@@ -28,24 +28,29 @@ The domain `olx.uz` is not resolving via DNS, indicating that:
    - Check with local users in Uzbekistan
 
 3. **Research current status**:
-   - Search for "OLX Uzbekistan 2024 status"
+   - Search for "OLX Uzbekistan 2025 status"
    - Check if OLX migrated to OLX.com global platform
    - Look for announcements about service changes
 
 ### Solution
 
 #### If OLX migrated to a new domain:
-1. Update `OLX_START_URL` in `scrape_olx_dacha_tashkent.py`:
+1. Update `OLX_BASE_URL` in `scrape_olx_dacha_tashkent.py` (around line 36):
    ```python
-   OLX_START_URL = "https://NEW_DOMAIN/path/to/dachas"
+   OLX_BASE_URL = "https://NEW_DOMAIN"
    ```
 
-2. Verify the page structure is compatible:
+2. If the URL structure changed, also update `OLX_LISTING_PATH`:
+   ```python
+   OLX_LISTING_PATH = "/path/to/dachas?params"
+   ```
+
+3. Verify the page structure is compatible:
    - Check if selectors still work
    - Test with small `MAX_PAGES` value
    - Validate data extraction
 
-3. Update README.md with new domain information
+4. Update README.md with new domain information
 
 #### If OLX is discontinued:
 1. Identify alternative platforms for Uzbekistan classified ads

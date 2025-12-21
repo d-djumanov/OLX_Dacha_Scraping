@@ -31,7 +31,11 @@ STATE_FILE = "state.json"
 LOCAL_CSV_PATTERN = "olx_dacha_tashkent_raw_{date}.csv"
 LOGFILE = "scrape_olx_dacha_tashkent.log"
 
-OLX_START_URL = "https://www.olx.uz/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
+# Site configuration
+# Update OLX_BASE_URL if the platform has migrated to a new domain
+OLX_BASE_URL = "https://www.olx.uz"
+OLX_LISTING_PATH = "/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
+OLX_START_URL = OLX_BASE_URL + OLX_LISTING_PATH
 
 # pagination
 MAX_PAGES = int(os.getenv("OLX_MAX_PAGES", "20"))  # scan up to N list pages
@@ -378,7 +382,7 @@ def scrape_olx_listings() -> Tuple[List[str], List[str]]:
                 if not href:
                     continue
                 if href.startswith("/"):
-                    href = "https://www.olx.uz" + href
+                    href = OLX_BASE_URL + href
                 page_urls.append(href)
 
             page_urls = list(set(page_urls))
@@ -407,7 +411,7 @@ def parse_list_grid(html: str) -> List[Dict[str, Any]]:
             continue
         href = a.get("href") or ""
         if href.startswith("/"):
-            href = "https://www.olx.uz" + href
+            href = OLX_BASE_URL + href
         lid = get_listing_id(href)
 
         title_el = card.select_one('[data-cy="ad_title"], h6, h5, h4')

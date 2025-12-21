@@ -119,17 +119,18 @@ Daily at 04:00 Tashkent time:
 If OLX.uz has migrated to a new domain or you want to scrape a different platform:
 
 1. **Open** `Project/scrape_olx_dacha_tashkent.py`
-2. **Find** the `OLX_START_URL` constant (around line 34):
+2. **Find** the `OLX_BASE_URL` constant (around line 36):
    ```python
-   OLX_START_URL = "https://www.olx.uz/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
+   OLX_BASE_URL = "https://www.olx.uz"
    ```
-3. **Update** with the new URL
-4. **Test** with a small page limit first:
+3. **Update** with the new domain (keep the https://)
+4. **Optionally update** `OLX_LISTING_PATH` if the URL structure changed
+5. **Test** with a small page limit first:
    ```bash
    export OLX_MAX_PAGES=2
    python Project/scrape_olx_dacha_tashkent.py
    ```
-5. **Verify** data extraction works correctly
+6. **Verify** data extraction works correctly
 
 See [config.py](Project/config.py) for configuration guidance and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed migration instructions.
 
