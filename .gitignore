@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+.~*
+
+# Project specific
+# Don't ignore the actual log file since it's part of the project
+# but you can uncomment this if you don't want to track logs:
+# Project/scrape_olx_dacha_tashkent.log
+
+# CSV outputs (optional - uncomment if you don't want to track CSVs)
+# Project/olx_dacha_tashkent_raw_*.csv
+
+# Service account credentials (should NOT be committed)
+# Uncomment if you have them in the repo:
+# *.json
+# !package.json
+# !tsconfig.json
