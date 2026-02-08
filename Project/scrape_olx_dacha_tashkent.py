@@ -31,7 +31,11 @@ STATE_FILE = "state.json"
 LOCAL_CSV_PATTERN = "olx_dacha_tashkent_raw_{date}.csv"
 LOGFILE = "scrape_olx_dacha_tashkent.log"
 
-OLX_START_URL = "https://www.olx.uz/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
+# Site configuration
+# Update OLX_BASE_URL if the platform has migrated to a new domain
+OLX_BASE_URL = "https://www.olx.uz"
+OLX_LISTING_PATH = "/nedvizhimost/posutochno_pochasovo/dachi/tashkent/?currency=UZS"
+OLX_START_URL = OLX_BASE_URL + OLX_LISTING_PATH
 
 # pagination
 MAX_PAGES = int(os.getenv("OLX_MAX_PAGES", "20"))  # scan up to N list pages
@@ -348,7 +352,26 @@ def scrape_olx_listings() -> Tuple[List[str], List[str]]:
                 empty_streak += 1
                 if empty_streak >= STOP_AFTER_EMPTY:
                     break
-                continue
+                continue  # Skip to next page iteration
+            except Exception as e:
+                error_msg = str(e)
+                # Check for DNS/Network errors
+                if "ERR_NAME_NOT_RESOLVED" in error_msg or "Could not resolve host" in error_msg:
+                    logging.error("❌ CRITICAL: Domain resolution failed for %s", url)
+                    logging.error("The OLX.uz domain appears to be unavailable or no longer operational.")
+                    logging.error("Possible reasons:")
+                    logging.error("  1. OLX.uz service has been discontinued in Uzbekistan")
+                    logging.error("  2. The domain has migrated to a different URL")
+                    logging.error("  3. Network/DNS configuration issues")
+                    logging.error("")
+                    logging.error("ACTION REQUIRED:")
+                    logging.error("  - Verify if OLX.uz is still operational")
+                    logging.error("  - Check for alternative domains or platforms")
+                    logging.error("  - Update OLX_START_URL in the configuration if domain has changed")
+                    raise RuntimeError(f"Domain resolution failed for {url}. OLX.uz may no longer be operational.") from e
+                else:
+                    # Re-raise other exceptions
+                    raise
 
             html = page.content()
             pages_html.append(html)
@@ -360,7 +383,7 @@ def scrape_olx_listings() -> Tuple[List[str], List[str]]:
                 if not href:
                     continue
                 if href.startswith("/"):
-                    href = "https://www.olx.uz" + href
+                    href = OLX_BASE_URL + href
                 page_urls.append(href)
 
             page_urls = list(set(page_urls))
@@ -389,7 +412,7 @@ def parse_list_grid(html: str) -> List[Dict[str, Any]]:
             continue
         href = a.get("href") or ""
         if href.startswith("/"):
-            href = "https://www.olx.uz" + href
+            href = OLX_BASE_URL + href
         lid = get_listing_id(href)
 
         title_el = card.select_one('[data-cy="ad_title"], h6, h5, h4')
