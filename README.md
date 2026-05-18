@@ -4,6 +4,31 @@ Scrapes vacation houses/dacha listings from OLX.uz (Tashkent region), with phone
 
 ---
 
+## ⚠️ IMPORTANT NOTICE - Service Status
+
+**As of December 21, 2025**: The `olx.uz` domain is **NOT RESOLVING** and appears to be discontinued.
+
+**Error**: `net::ERR_NAME_NOT_RESOLVED at https://www.olx.uz/`
+
+### What This Means
+The OLX platform in Uzbekistan may have:
+- Been discontinued or shut down
+- Migrated to a different domain
+- Merged with another platform
+
+### What You Need to Do
+1. **Verify OLX status** in Uzbekistan (check with local users/sources)
+2. **Find the new platform** for dacha listings in Uzbekistan
+3. **Update the configuration** (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed instructions)
+
+The scraper code is working correctly, but needs the correct target URL to be configured.
+
+**Last known working timestamp**: 2025-12-21 10:19:37 +05 (Tashkent time)
+
+For detailed troubleshooting steps, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
+---
+
 ## Setup
 
 ### 1. Requirements
@@ -89,8 +114,32 @@ Daily at 04:00 Tashkent time:
 
 ---
 
+## Updating Target URL
+
+If OLX.uz has migrated to a new domain or you want to scrape a different platform:
+
+1. **Open** `Project/scrape_olx_dacha_tashkent.py`
+2. **Find** the `OLX_BASE_URL` constant (around line 36):
+   ```python
+   OLX_BASE_URL = "https://www.olx.uz"
+   ```
+3. **Update** with the new domain (keep the https://)
+4. **Optionally update** `OLX_LISTING_PATH` if the URL structure changed
+5. **Test** with a small page limit first:
+   ```bash
+   export OLX_MAX_PAGES=2
+   python Project/scrape_olx_dacha_tashkent.py
+   ```
+6. **Verify** data extraction works correctly
+
+See [config.py](Project/config.py) for configuration guidance and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed migration instructions.
+
+---
+
 ## Support
 
 If you hit quota limits, check Google API project/service account sharing. For Playwright troubleshooting, rerun `playwright install`.
+
+For domain resolution issues, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
