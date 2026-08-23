@@ -1,5 +1,5 @@
-start:   2026-08-22 10:18:13 +05
-end:     2026-08-22 10:38:16 +05
-duration_seconds: 1203
-duration_hms: 00:20:03
-status:  success
+start:   2026-08-23 10:20:16 +05
+end:     2026-08-23 10:37:04 +05
+duration_seconds: 1008
+duration_hms: 00:16:48
+status:  failure
